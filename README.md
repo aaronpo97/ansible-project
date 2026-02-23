@@ -2,13 +2,13 @@
 
 ## Overview
 
-This repository contains an Ansible playbook designed to automate the configuration of Fedora-based systems. The playbook provisions a new virtual machine or server according to predefined preferences, ensuring consistent and secure setup.
+This repository contains an Ansible playbook designed to automate the configuration of Fedora-based internet-facing systems.
 
 ## What it does
 
 - **Nginx**: Installs and starts the Nginx web server, configures firewall rules for HTTP/HTTPS (ports 80/443), and manages SELinux settings as required.
 - **Docker**: Adds the official Docker CE repository, installs Docker and Docker Compose, starts the Docker daemon, and adds the current user to the `docker` group.
-- **Dotfiles**: Installs Zsh and Oh My Zsh, clones the user's dotfiles repository ([link](https://github.com/aaronpo97/dotfiles)), and applies configuration using GNU Stow.
+- **Dotfiles**: Installs Zsh and Oh My Zsh, clones my repository ([link](https://github.com/aaronpo97/dotfiles)), and applies configuration using GNU Stow.
 - **Fail2ban**: Installs Fail2ban, deploys a custom `jail.local` configuration, and enables the service.
 - **Security**: Changes the SSH port to 1997, closes port 22, applies optional SSH hardening, configures firewalld, enables SELinux port, installs and configures `dnf-automatic` for security updates, installs Cockpit and restricts access to localhost.
 - **Lazydocker**: Installs Lazydocker for simplified Docker management.
@@ -18,7 +18,7 @@ This repository contains an Ansible playbook designed to automate the configurat
 
 - Ansible must be installed on the control machine.
 - SSH access to the target host is required.
-- Target system must be running Fedora (tested with Fedora 39 and later).
+- Target system must be running Fedora (tested with Fedora 43).
 
 ## Usage
 

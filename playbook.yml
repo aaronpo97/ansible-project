@@ -9,6 +9,43 @@
       become: false
       changed_when: false
 
+    - name: Ensure Python3 is installed
+      package:
+        name: python3
+        state: present
+      become: true
+
+    - name: Ensure firewalld package is installed
+      package:
+        name: firewalld
+        state: present
+      become: true
+
+    - name: Install distro package python3-firewall if available
+      package:
+        name: python3-firewall
+        state: present
+      become: true
+      when: ansible_facts['os_family'] == 'RedHat' or ansible_facts['distribution'] == 'Fedora'
+
+    - name: Fallback - install Python firewall package via pip
+      ansible.builtin.command: python3 -m pip install "firewall>=0.2.11"
+      become: true
+      changed_when: false
+      args:
+        warn: false
+      when: ansible_facts['os_family'] != 'RedHat' and ansible_facts['distribution'] != 'Fedora'
+
+    - name: Check for sitecustomize.py presence
+      stat:
+        path: /usr/lib/python3.14/site-packages/sitecustomize.py
+      register: sitecustomize_stat
+      ignore_errors: true
+
+    - name: Backup and remove sitecustomize.py if present
+      become: true
+      shell: mv /usr/lib/python3.14/site-packages/sitecustomize.py /root/sitecustomize.py.bak
+      when: sitecustomize_stat.stat.exists
   roles:
     - nginx
     - docker
