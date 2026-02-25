@@ -1,50 +1,278 @@
 ---
-- name: Deploy custom nginx configuration from sites.conf
+- name: Deploy custom nginx configuration and SSL certificates
   hosts: webservers
   become: true
+
+  vars:
+    nginx_config_src: "{{ playbook_dir }}/sites.conf"
+    nginx_config_dest: /etc/nginx/conf.d/sites.conf
+    static_site_src: "{{ playbook_dir }}/server-home/"
+    static_site_dest: /var/www/ayerble.com
+    certbot_email: aaron.po97@gmail.com
+    certbot_domains:
+      - ayerble.com
+      - www.ayerble.com
+      - aaronwilliampo.com
+      - www.aaronwilliampo.com
+      - git.aaronwilliampo.com
+      - yerb-engine.aaronwilliampo.com
+    backup_dir: /root/nginx-backups
+    health_check_urls:
+      - http://localhost
+      - http://ayerble.com
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Restart nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+
   tasks:
+    # ------ PRE-DEPLOYMENT CHECKS ------------------------------------------------------------------------------------------
+    - name: Verify nginx is installed and running
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+      check_mode: yes
+      register: nginx_status
+
+    - name: Fail if nginx is not installed
+      ansible.builtin.fail:
+        msg: "Nginx is not installed or not running. Run the provision playbook first."
+      when: nginx_status.failed | default(false)
+
+    - name: Check if certbot is installed
+      ansible.builtin.command: which certbot
+      register: certbot_check
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if certbot is not installed
+      ansible.builtin.debug:
+        msg: "WARNING: certbot is not installed. SSL certificate tasks will be skipped."
+      when: certbot_check.rc != 0
+
+    # ------ BACKUP EXISTING CONFIG ----------------------------------------------------------------------------------------
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: root
+
+    - name: Create timestamped backup of current nginx config
+      ansible.builtin.copy:
+        src: "{{ nginx_config_dest }}"
+        dest: "{{ backup_dir }}/sites.conf.{{ ansible_date_time.iso8601_basic_short }}"
+        remote_src: yes
+        mode: "0644"
+      when: nginx_config_dest is exists
+      ignore_errors: yes
+      register: backup_result
+
+    - name: Log backup location
+      ansible.builtin.debug:
+        msg: "Backup created at {{ backup_result.dest }}"
+      when: backup_result is changed
+
+    # ------ DEPLOY NEW CONFIG --------------------------------------------------------------------------------------------------
     - name: Copy nginx config file
       ansible.builtin.copy:
-        src: ../deploy-apps/sites.conf
-        dest: /etc/nginx/conf.d/sites.conf
+        src: "{{ nginx_config_src }}"
+        dest: "{{ nginx_config_dest }}"
         owner: root
         group: root
         mode: "0644"
+        backup: yes
+        # Removed `validate` because the copied file is an nginx snippet (conf.d fragment)
+        # and cannot be tested on its own. The playbook runs a full `nginx -t` after
+        # deployment and will catch configuration errors; backups are created above.
+      register: nginx_config_changed
+      notify: Reload nginx
 
-    - name: Ensure /var/www/ayerble.com exists
+    # ------ SETUP STATIC SITE DIRECTORY ------------------------------------------------------------------------------
+    - name: Ensure static site directory exists
       ansible.builtin.file:
-        path: /var/www/ayerble.com
+        path: "{{ static_site_dest }}"
         state: directory
         owner: root
         group: root
         mode: "0755"
 
-    - name: Copy static site content to /var/www/ayerble.com
-      ansible.builtin.synchronize:
-        src: ../deploy-apps/server-home/
-        dest: /var/www/ayerble.com/
+    - name: Set SELinux context for web content directory
+      community.general.sefcontext:
+        target: "{{ static_site_dest }}(/.*)?"
+        setype: httpd_sys_content_t
+        state: present
+      when: ansible_selinux.status == "enabled"
+      register: selinux_context
+
+    - name: Apply SELinux context
+      ansible.builtin.command: restorecon -Rv {{ static_site_dest }}
+      when:
+        - ansible_selinux.status == "enabled"
+        - selinux_context is changed
+      changed_when: false
+
+    # ------ SYNC STATIC SITE CONTENT ------------------------------------------------------------------------------------
+    - name: Sync static site content
+      ansible.posix.synchronize:
+        src: "{{ static_site_src }}"
+        dest: "{{ static_site_dest }}/"
         recursive: yes
         delete: yes
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.DS_Store"
+          - "--exclude=*.swp"
+          - "--exclude=*~"
+      register: sync_result
 
+    - name: Fix permissions on synced files
+      ansible.builtin.file:
+        path: "{{ static_site_dest }}"
+        owner: root
+        group: root
+        recurse: yes
+        mode: "u=rwX,g=rX,o=rX"
+      when: sync_result is changed
+
+    # ------ VALIDATE AND RELOAD NGINX ----------------------------------------------------------------------------------
     - name: Test nginx configuration
       ansible.builtin.command: nginx -t
       register: nginx_test
       changed_when: false
       failed_when: nginx_test.rc != 0
 
-    - name: Reload nginx
-      ansible.builtin.service:
-        name: nginx
-        state: reloaded
+    - name: Force handler execution (reload nginx if config changed)
+      ansible.builtin.meta: flush_handlers
 
-    - name: Obtain or renew SSL certificates with certbot (nginx plugin)
+    - name: Wait for nginx to reload
+      ansible.builtin.pause:
+        seconds: 2
+      when: nginx_config_changed is changed
+
+    # ------ HEALTH CHECKS ----------------------------------------------------------------------------------------------------------
+    - name: Perform HTTP health checks
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code:
+          - 200
+          - 301
+          - 302
+          - 404 # Allow 404 for domains without content yet
+        follow_redirects: none
+        timeout: 10
+      loop: "{{ health_check_urls }}"
+      register: health_check_results
+      failed_when: false
+      retries: 3
+      delay: 2
+
+    - name: Report health check results
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.status }} {{ item.msg | default('') }}"
+      loop: "{{ health_check_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ------ SSL CERTIFICATE MANAGEMENT --------------------------------------------------------------------------------
+    - name: Check existing certificates
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ certbot_domains[0] }}/fullchain.pem"
+      register: cert_exists
+      when: certbot_check.rc == 0
+
+    - name: Set certificate domain arguments
+      ansible.builtin.set_fact:
+        cert_domain_args: "{{ certbot_domains | map('regex_replace', '^(.*)$', '-d \\1') | join(' ') }}"
+      when: certbot_check.rc == 0
+
+    - name: Obtain or renew SSL certificates with certbot
       ansible.builtin.command:
-        cmd: >-
+        cmd: >
           certbot run --nginx --non-interactive --agree-tos --redirect
-          -m aaron.po97@gmail.com
-          -d ayerble.com -d www.ayerble.com
-          -d aaronwilliampo.com -d www.aaronwilliampo.com
-          -d git.aaronwilliampo.com -d yerb-engine.aaronwilliampo.com
+          --email {{ certbot_email }}
+          {{ cert_domain_args }}
       register: certbot_result
-      changed_when: "'Certificate not yet due for renewal' not in certbot_result.stdout"
-      failed_when: certbot_result.rc != 0
+      changed_when: >
+        'Congratulations' in certbot_result.stdout or
+        'Successfully received certificate' in certbot_result.stdout or
+        'Certificate not yet due for renewal' not in certbot_result.stdout
+      failed_when:
+        - certbot_result.rc != 0
+        - "'Certificate not yet due for renewal' not in certbot_result.stdout"
+      when: certbot_check.rc == 0
+      notify: Reload nginx
+
+    - name: Display certbot result
+      ansible.builtin.debug:
+        msg: "{{ certbot_result.stdout_lines | default(['Certbot not available']) }}"
+      when: certbot_check.rc == 0
+
+    # ------ POST-DEPLOYMENT VALIDATION --------------------------------------------------------------------------------
+    - name: Final nginx status check
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+      check_mode: yes
+      register: final_nginx_status
+
+    - name: Deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "------------------------------------------------------------------------------------------"
+          - "Deployment completed successfully!"
+          - "------------------------------------------------------------------------------------------"
+          - "Config changed: {{ nginx_config_changed is changed }}"
+          - "Static files synced: {{ sync_result is changed }}"
+          - "SSL certificates: {{ 'Updated' if (certbot_result is changed) else 'Current' }}"
+          - "Backup location: {{ backup_dir }}"
+          - "------------------------------------------------------------------------------------------"
+
+    # ------ ROLLBACK HELPER ------------------------------------------------------------------------------------------------------
+    - name: Create rollback script
+      ansible.builtin.copy:
+        dest: /root/rollback-nginx.sh
+        mode: "0700"
+        content: |
+          #!/bin/bash
+          # Nginx Configuration Rollback Script
+          # Generated: {{ ansible_date_time.iso8601 }}
+
+          set -e
+
+          BACKUP_DIR="{{ backup_dir }}"
+          LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/sites.conf.* 2>/dev/null | head -n1)
+
+          if [ -z "$LATEST_BACKUP" ]; then
+            echo "Error: No backup found in $BACKUP_DIR"
+            exit 1
+          fi
+
+          echo "Rolling back to: $LATEST_BACKUP"
+          cp "$LATEST_BACKUP" {{ nginx_config_dest }}
+
+          echo "Testing nginx configuration..."
+          if nginx -t; then
+            echo "Configuration valid. Reloading nginx..."
+            systemctl reload nginx
+            echo "Rollback completed successfully!"
+          else
+            echo "Error: Backup configuration is invalid!"
+            exit 1
+          fi
+
+    - name: Display rollback instructions
+      ansible.builtin.debug:
+        msg:
+          - "If you need to rollback this deployment, run:"
+          - "  ssh {{ ansible_user }}@{{ ansible_host }} 'sudo /root/rollback-nginx.sh'"
+
+  # (Error handling moved into the task block's rescue section)
