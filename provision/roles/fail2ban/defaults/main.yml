@@ -1,3 +1,7 @@
 ---
 # Default SSH port used by fail2ban config. Keep in sync with security role.
 ssh_port: 1997
+
+# Optional list of IPs to ignore for fail2ban. Can also be provided via
+# the environment variable `FAIL2BAN_IGNORE_IP` as a comma-separated list.
+fail2ban_ignore_ips: []

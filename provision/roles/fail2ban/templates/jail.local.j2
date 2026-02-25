@@ -1,0 +1,25 @@
+[DEFAULT]
+{% set env_ips = lookup('env','FAIL2BAN_IGNORE_IP') | default('') %}
+{% set env_list = (env_ips | trim) and env_ips.split(',') or [] %}
+{% set combined = (fail2ban_ignore_ips | default([])) + env_list %}
+ignoreip = 127.0.0.1/8 ::1{% if combined %} {{ combined | map('trim') | reject('equalto','') | list | join(' ') }}{% endif %}
+
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled  = true
+port     = {{ ssh_port | default('22') }}
+logpath  = %(sshd_log)s
+
+[nginx-http-auth]
+enabled  = true
+port     = http,https
+logpath  = %(nginx_error_log)s
+
+[nginx-limit-req]
+enabled  = true
+port     = http,https
+logpath  = %(nginx_error_log)s

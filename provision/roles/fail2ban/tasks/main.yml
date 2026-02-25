@@ -5,29 +5,9 @@
     state: present
 
 - name: Deploy jail.local
-  copy:
+  template:
+    src: jail.local.j2
     dest: /etc/fail2ban/jail.local
-    content: |
-      [DEFAULT]
-      bantime  = 1h
-      findtime = 10m
-      maxretry = 5
-      backend  = systemd
-
-      [sshd]
-      enabled  = true
-      port     = {{ ssh_port | default('22') }}
-      logpath  = %(sshd_log)s
-
-      [nginx-http-auth]
-      enabled  = true
-      port     = http,https
-      logpath  = %(nginx_error_log)s
-
-      [nginx-limit-req]
-      enabled  = true
-      port     = http,https
-      logpath  = %(nginx_error_log)s
     mode: "0644"
   notify: Restart fail2ban
 

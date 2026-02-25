@@ -32,6 +32,32 @@ The `--ask-pass` flag prompts for the SSH password, while `--ask-become-pass` pr
 
 After the playbook completes, update your inventory file to use the new SSH port (1997).
 
+## Fail2Ban: ignore IPs and env var
+
+You can tell the Fail2Ban role to ignore specific IPs when generating /etc/fail2ban/jail.local in two ways:
+
+- Export the `FAIL2BAN_IGNORE_IP` environment variable on the control machine (comma-separated):
+
+```bash
+export FAIL2BAN_IGNORE_IP="203.0.113.5,198.51.100.10"
+ansible-playbook -i provision/inventory.ini provision/playbook.yml
+```
+
+- Or set the role variable `fail2ban_ignore_ips` (for example in `group_vars` or via `-e`):
+
+```bash
+ansible-playbook -i provision/inventory.ini provision/playbook.yml -e "fail2ban_ignore_ips=['203.0.113.5']"
+```
+
+The role always includes the loopback addresses (`127.0.0.1/8 ::1`) and will merge your IPs (the template converts comma-separated env values into space-separated entries in the generated file).
+
+To verify the generated file on the target host:
+
+```bash
+ssh -p 1997 fedora@<host>
+sudo cat /etc/fail2ban/jail.local
+```
+
 ## Inventory Example
 
 Refer to `inventory.ini.example` for a sample inventory configuration.
